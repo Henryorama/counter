@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "mock:skyvern": "tsx src/skyvern/mockServer.ts",
     "lint": "echo 'no lint configured for api yet'",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",

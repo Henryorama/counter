@@ -8,11 +8,11 @@ import type { SkyvernClient } from "../skyvern/client.js";
 
 export function jobsRouter(skyvern: SkyvernClient): Router {
   const router = Router();
-  router.use(requireOrgContext);
 
   // List jobs for the active organization.
   router.get(
     "/v1/jobs",
+    requireOrgContext,
     asyncHandler(async (req, res) => {
       const jobs = await listJobs(req.ctx!.db);
       res.json({ jobs });
@@ -22,6 +22,7 @@ export function jobsRouter(skyvern: SkyvernClient): Router {
   // Create + dispatch a task job to Skyvern.
   router.post(
     "/v1/jobs",
+    requireOrgContext,
     asyncHandler(async (req, res) => {
       const input = createTaskJobSchema.parse(req.body);
       const job = await createTaskJob({
@@ -40,6 +41,7 @@ export function jobsRouter(skyvern: SkyvernClient): Router {
 
   router.get(
     "/v1/jobs/:id",
+    requireOrgContext,
     asyncHandler(async (req, res) => {
       const job = await getJob(req.ctx!.db, req.params.id!);
       if (!job) return res.status(404).json({ error: "Job not found" });
@@ -50,6 +52,7 @@ export function jobsRouter(skyvern: SkyvernClient): Router {
   // Human-in-the-loop: operator submits a 2FA code to resolve an ACTION_REQUIRED.
   router.post(
     "/v1/jobs/:id/actions/:actionId/resolve",
+    requireOrgContext,
     asyncHandler(async (req, res) => {
       const { verificationCode } = resolveActionSchema.parse(req.body);
       const db = req.ctx!.db;

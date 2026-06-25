@@ -4,6 +4,7 @@ dist/
 out/
 coverage/
 *.log
+*.tsbuildinfo
 .env
 .env.local
 .DS_Store
@@ -15,3 +16,5 @@ packages/db/src/generated/
 !**/prisma/migrations/**/*.sql
 !.env.example
 !**/.env.example
+!**/.eslintrc.json
+!**/.eslintrc
