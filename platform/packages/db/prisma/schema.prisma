@@ -1,0 +1,306 @@
+// Skyvern-backed Healthcare Automation SaaS — data model.
+// Multi-tenant: users belong to many organizations via Membership.
+// Third-party portal secrets are NOT stored here — only a reference into Skyvern's vault.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  ACTION_REQUIRED
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum RunType {
+  TASK
+  WORKFLOW
+}
+
+enum ActionType {
+  TOTP_2FA
+  CAPTCHA
+  MANUAL_TAKEOVER
+}
+
+enum ActionStatus {
+  WAITING
+  RESOLVED
+  EXPIRED
+}
+
+enum CredentialType {
+  PASSWORD
+  API_KEY
+  CREDIT_CARD
+  SECRET
+}
+
+// ----------------------------------------------------------------------------
+// Auth.js (NextAuth) models
+// ----------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  // Optional local credentials login; OAuth users won't have this.
+  passwordHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  memberships   Membership[]
+  createdJobs   AutomationJob[] @relation("JobCreatedBy")
+  resolvedActions ActionRequest[] @relation("ActionResolvedBy")
+  auditLogs     AuditLog[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ----------------------------------------------------------------------------
+// Tenancy
+// ----------------------------------------------------------------------------
+
+model Organization {
+  id   String @id @default(cuid())
+  name String
+  slug String @unique
+
+  // One Skyvern organization + API key per tenant (key stored in a secrets
+  // manager; this column holds only the reference/ARN, never the secret).
+  skyvernOrgId     String?
+  skyvernApiKeyRef String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships       Membership[]
+  credentials       Credential[]
+  workflowTemplates WorkflowTemplate[]
+  jobs              AutomationJob[]
+  webhookEvents     WebhookEvent[]
+  auditLogs         AuditLog[]
+}
+
+model Membership {
+  id             String       @id @default(cuid())
+  userId         String
+  organizationId String
+  role           Role         @default(MEMBER)
+  createdAt      DateTime     @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+// ----------------------------------------------------------------------------
+// Credentials (reference-only; secrets live in Skyvern's vault)
+// ----------------------------------------------------------------------------
+
+model Credential {
+  id             String         @id @default(cuid())
+  organizationId String
+  name           String
+  type           CredentialType @default(PASSWORD)
+
+  // Reference into Skyvern's credential vault. No plaintext/ciphertext here.
+  skyvernCredentialId String?
+  // Must match the totp_identifier sent to Skyvern when 2FA codes are pushed/pulled.
+  totpIdentifier      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobs         AutomationJob[]
+
+  @@index([organizationId])
+}
+
+model WorkflowTemplate {
+  id             String @id @default(cuid())
+  organizationId String
+  name           String
+
+  // Skyvern workflow permanent id (wpid_...).
+  skyvernWorkflowPermanentId String
+  inputSchema                Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobs         AutomationJob[]
+
+  @@index([organizationId])
+}
+
+// ----------------------------------------------------------------------------
+// Automation jobs + human-in-the-loop
+// ----------------------------------------------------------------------------
+
+model AutomationJob {
+  id              String  @id @default(cuid())
+  organizationId  String
+  createdByUserId String?
+  credentialId    String?
+  workflowTemplateId String?
+
+  runType                    RunType   @default(TASK)
+  skyvernRunId               String?   @unique
+  skyvernWorkflowPermanentId String?
+  status                     JobStatus @default(PENDING)
+
+  prompt      String?
+  inputParams Json?
+  output      Json?
+  recordingUrl String?
+  appUrl       String?
+  errorCode    String?
+  errorMessage String?
+  attempts     Int      @default(0)
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy        User?             @relation("JobCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  credential       Credential?       @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  workflowTemplate WorkflowTemplate? @relation(fields: [workflowTemplateId], references: [id], onDelete: SetNull)
+  actionRequests   ActionRequest[]
+  webhookEvents    WebhookEvent[]
+
+  @@index([organizationId, status])
+  @@index([skyvernRunId])
+}
+
+model ActionRequest {
+  id     String       @id @default(cuid())
+  jobId  String
+  type   ActionType
+  status ActionStatus @default(WAITING)
+
+  context        Json?
+  totpIdentifier String?
+  // Reference to a short-TTL secret holding the human-supplied code; never plaintext.
+  resolutionRef  String?
+
+  resolvedByUserId String?
+  createdAt        DateTime  @default(now())
+  expiresAt        DateTime
+  resolvedAt       DateTime?
+
+  job        AutomationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  resolvedBy User?         @relation("ActionResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([jobId, status])
+}
+
+// ----------------------------------------------------------------------------
+// Webhook log (raw Skyvern payloads — may contain PHI)
+// ----------------------------------------------------------------------------
+
+model WebhookEvent {
+  id             String  @id @default(cuid())
+  skyvernRunId   String?
+  jobId          String?
+  organizationId String?
+
+  eventType        String?
+  signatureValid   Boolean @default(false)
+  rawPayload       Json
+  headers          Json
+  processingStatus String  @default("RECEIVED")
+  processingError  String?
+
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  job          AutomationJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  organization Organization?  @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([skyvernRunId])
+  @@index([organizationId])
+}
+
+// ----------------------------------------------------------------------------
+// Audit log (append-only; HIPAA requirement)
+// ----------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorUserId    String?
+  action         String
+  targetType     String
+  targetId       String?
+  metadata       Json?
+  ip             String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+}
